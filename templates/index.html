@@ -3,15 +3,180 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Flask Container Demo</title>
+  <title>Flask Container Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main class="card">
-    <span class="status">Container is healthy</span>
-    <h1>Flask application is running!</h1>
-    <p>This browser page is served by Flask and Gunicorn inside Docker.</p>
-    <p>Container hostname: <code>{{ hostname }}</code></p>
-  </main>
+  <div class="app">
+
+    <header class="hero">
+      <div>
+        <h1>🖥️ Flask Container Dashboard</h1>
+        <p>
+          Live from <code>{{ hostname }}</code> · {{ platform }} ·
+          served by Gunicorn inside Docker
+        </p>
+      </div>
+      <div id="status" class="status-pill offline">
+        <span class="status-dot"></span>
+        <span id="status-text">Connecting…</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <div class="label">⚡ CPU Usage</div>
+        <div class="value" id="cpu">–<span class="unit">%</span></div>
+        <div class="bar" id="cpu-bar"><span></span></div>
+        <div class="sub" id="cpu-sub">Detecting cores…</div>
+      </div>
+
+      <div class="card">
+        <div class="label">🧠 Memory</div>
+        <div class="value" id="memory">–<span class="unit">%</span></div>
+        <div class="bar" id="memory-bar"><span></span></div>
+        <div class="sub" id="memory-sub">– / – GB</div>
+      </div>
+
+      <div class="card">
+        <div class="label">💾 Disk</div>
+        <div class="value" id="disk">–<span class="unit">%</span></div>
+        <div class="bar" id="disk-bar"><span></span></div>
+        <div class="sub" id="disk-sub">– / – GB</div>
+      </div>
+
+      <div class="card">
+        <div class="label">🧩 Processes</div>
+        <div class="value" id="processes">–</div>
+        <div class="sub">Running in container</div>
+      </div>
+    </section>
+
+    <section class="spark-wrap">
+      <h3>CPU / Memory — last 60s</h3>
+      <canvas id="spark" class="spark" width="1000" height="120"></canvas>
+    </section>
+
+    <section class="info">
+      <div class="item"><div class="k">Hostname</div><div class="v" id="i-host">–</div></div>
+      <div class="item"><div class="k">Platform</div><div class="v" id="i-platform">–</div></div>
+      <div class="item"><div class="k">Uptime</div><div class="v" id="i-uptime">–</div></div>
+      <div class="item"><div class="k">Boot Time</div><div class="v" id="i-boot">–</div></div>
+      <div class="item"><div class="k">Last Update</div><div class="v" id="i-time">–</div></div>
+    </section>
+
+    <footer>Live metrics via Server-Sent Events · updates every 1s</footer>
+  </div>
+
+  <script>
+    // ---- Utilities ----
+    const $ = (id) => document.getElementById(id);
+
+    function setBar(barEl, value) {
+      const fill = barEl.querySelector("span");
+      fill.style.width = Math.min(value, 100) + "%";
+      barEl.classList.toggle("warn", value >= 60 && value < 85);
+      barEl.classList.toggle("danger", value >= 85);
+    }
+
+    // ---- Sparkline (canvas) ----
+    const canvas = $("spark");
+    const ctx = canvas.getContext("2d");
+    const MAX = 60;
+    const cpuHist = [];
+    const memHist = [];
+
+    function drawSpark() {
+      const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+      const h = canvas.height = 120 * devicePixelRatio;
+      ctx.clearRect(0, 0, w, h);
+
+      const pad = 8 * devicePixelRatio;
+      const stepX = (w - pad * 2) / (MAX - 1);
+
+      // grid
+      ctx.strokeStyle = "rgba(148,163,184,0.12)";
+      ctx.lineWidth = 1 * devicePixelRatio;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad + ((h - pad * 2) / 4) * i;
+        ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke();
+      }
+
+      const drawLine = (data, color) => {
+        if (data.length < 2) return;
+        ctx.beginPath();
+        data.forEach((v, i) => {
+          const x = pad + stepX * (MAX - data.length + i);
+          const y = h - pad - ((h - pad * 2) * (v / 100));
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2 * devicePixelRatio;
+        ctx.lineJoin = "round";
+        ctx.stroke();
+      };
+
+      drawLine(memHist, "#22d3ee");
+      drawLine(cpuHist, "#38bdf8");
+    }
+
+    // ---- SSE ----
+    const statusEl = $("status");
+    const statusText = $("status-text");
+    const es = new EventSource("/stream");
+
+    es.onopen = () => {
+      statusEl.classList.remove("offline");
+      statusText.textContent = "Live";
+    };
+
+    es.onerror = () => {
+      statusEl.classList.add("offline");
+      statusText.textContent = "Reconnecting…";
+    };
+
+    es.onmessage = (e) => {
+      const d = JSON.parse(e.data);
+
+      // Metrics
+      $("cpu").innerHTML       = `${d.cpu}<span class="unit">%</span>`;
+      $("memory").innerHTML    = `${d.memory}<span class="unit">%</span>`;
+      $("disk").innerHTML      = `${d.disk}<span class="unit">%</span>`;
+      $("processes").textContent = d.processes;
+
+      // Progress bars
+      setBar($("cpu-bar"), d.cpu);
+      setBar($("memory-bar"), d.memory);
+      setBar($("disk-bar"), d.disk);
+
+      // Subtitles
+      $("cpu-sub").textContent    = `${d.cpu_cores} cores available`;
+      $("memory-sub").textContent = `${d.memory_used_gb} / ${d.memory_total_gb} GB`;
+      $("disk-sub").textContent   = `${d.disk_used_gb} / ${d.disk_total_gb} GB`;
+
+      // Info row
+      $("i-host").textContent     = d.hostname;
+      $("i-platform").textContent = d.platform;
+      $("i-uptime").textContent   = d.uptime;
+      $("i-boot").textContent     = d.boot_time;
+      $("i-time").textContent     = d.timestamp;
+
+      // Sparkline history
+      cpuHist.push(d.cpu);
+      memHist.push(d.memory);
+      if (cpuHist.length > MAX) cpuHist.shift();
+      if (memHist.length > MAX) memHist.shift();
+      drawSpark();
+
+      // Page title update
+      document.title = `CPU ${d.cpu}% · ${d.hostname}`;
+    };
+
+    window.addEventListener("resize", drawSpark);
+    drawSpark();
+  </script>
 </body>
 </html>
